@@ -1,0 +1,413 @@
+---
+title: "AmgenData processing"
+author: "Shiliang Wang"
+date: "2/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+###### load library
+```{r loadLib, echo = FALSE}
+library(rio)
+library(tidyverse)
+library(magrittr)
+library(readxl)
+library(ggpubr)
+library(ggplot2)
+library(Rmisc)
+library(lme4)
+library(multcomp)
+library(car)
+library(lmerTest)
+```
+
+########## create functions
+
+```{r createFunctions, echo = FALSE}
+generate_date = function(){
+  date = date()
+  date = gsub("^\\w+", "", date)
+  date = gsub("\\d+:\\d+.+", "", date)
+  date = gsub("\\s+", "", date)
+  
+  return (date)
+}
+
+```
+
+############ read input data
+
+```{r readInput, echo = FALSE}
+##cwd = getwd()
+##print (cwd)
+#inputFile <- readline(prompt="Please enter input path and file name: ")
+path4data = "C:/Users/Shiliang/Documents/R/Rscripts/AmgenTest"
+datafile = paste(path4data,"Data/R_Python_interview questions_v3.xlsx", sep = "/")
+assayData.df = read_excel(datafile, sheet = "data")
+
+date = generate_date()
+assayData.wide.df = spread(assayData.df, timepoint, analyte_value)
+assay.data.wide.file = paste("AmgenAssay_rawData", date, "csv", sep = ".")
+assay.data.wide.file = paste(path4data, assay.data.wide.file, sep = "/")
+write.csv(as.data.frame(assayData.wide.df), file = assay.data.wide.file, row.names = F)
+
+####### clean the data and get  the mean value for the timepoint with multiple measurements
+subjId = unique(assayData.df$subject)
+assayData.clean.df = assayData.df[FALSE,]
+
+for (id in subjId){
+  subj.df = assayData.df[assayData.df$subject == id,]
+  marker = unique(subj.df$marker)
+  for(mk in marker){
+    subj.mk.df = subj.df[subj.df$marker == mk,]
+    print(c(id, dim(subj.df), mk, dim(subj.mk.df)))
+    if(nrow(subj.mk.df) > 1){
+      subj.tp = unique(subj.mk.df$timepoint)
+      for(tp in subj.tp){
+        subj.tp.df = subj.mk.df[subj.mk.df$timepoint == tp,]
+        #print(c(id, tp, dim(subj.tp.df)))
+        if(nrow(subj.tp.df) == 1){
+          assayData.clean.df = rbind(assayData.clean.df, subj.tp.df)
+        }else if(nrow(subj.tp.df) > 1){
+          analyte.mean = mean(as.integer(subj.tp.df$analyte_value))
+          subj.tp.new.df = subj.tp.df[1,]
+          subj.tp.new.df$analyte_value = analyte.mean
+          assayData.clean.df = rbind(assayData.clean.df, subj.tp.new.df)
+        }
+      }
+    }
+  }
+}
+
+### plot
+assayData.df = assayData.clean.df
+assayData.df$timepoint = factor(assayData.df$timepoint, levels = c("DAY1", "DAY8", "DAY15", "DAY22", "DAY29"))
+
+assayData.df$treatment_group = factor(assayData.df$treatment_group, levels = c("TA", "TB", "TC"))
+```
+
+
+############ plot data for individual patients (question 1)
+
+```{r linePlot, echo = FALSE}
+
+pt_lineplot = ggplot(data = assayData.df, aes(x = timepoint, y = analyte_value, group = subject, color = treatment_group)) + geom_line(size = 1.2) + geom_point(size = 3) + labs(y = paste0("analyte_value (log10)")) + theme(axis.text.x = element_text(angle = 20, vjust = 0.8, hjust=0.6))
+pt_lineplot = pt_lineplot + facet_wrap(~marker, ncol = length(unique(assayData.df$marker))) + scale_y_continuous(trans = "log10")
+
+pt.lineplot.file = paste("Patient_lineplot", date, "png", sep = ".")
+pt.lineplot.file = paste(path4data, pt.lineplot.file, sep = "/")
+ggsave(pt_lineplot, file = pt.lineplot.file, width = 10, height = 4, dpi = 300)
+
+
+assayData.sum.df = summarySE(assayData.df, measurevar="analyte_value", groupvars=c("marker","treatment_group", "timepoint"))
+assayData.sum.df$timepoint = factor(assayData.sum.df$timepoint, levels = c("DAY1", "DAY8", "DAY15", "DAY22", "DAY29"))
+trt_mean_plot = ggplot(assayData.sum.df, aes(x=timepoint, y= analyte_value, colour=treatment_group, group = treatment_group)) + 
+    geom_errorbar(aes(ymin=analyte_value-sd, ymax=analyte_value + sd), width=0.5) +
+    geom_line(size = 0.8) +
+    geom_point(size = 1.8)
+trt_mean_plot = trt_mean_plot + facet_wrap(~marker, ncol = length(unique(assayData.df$marker))) #+ scale_y_continuous(trans = "log10")
+trt_mean_plot.file = paste("TreatGroup_mean_plot", date, "png", sep = ".")
+
+trt_mean_plot.file = paste(path4data, trt_mean_plot.file, sep = "/")
+ggsave(trt_mean_plot, file = trt_mean_plot.file, width = 10, height = 4, dpi = 300)
+
+####### convert long dataframe to wide dataframe based on timepoint
+assayData.wd.df = spread(assayData.df, timepoint, analyte_value)
+assay.data.tpwide.file = paste("AmgenAssay_TP_wide", date, "csv", sep = ".")
+assay.data.tpwide.file = paste(path4data, assay.data.tpwide.file, sep = "/")
+write.csv(as.data.frame(assayData.wd.df), file = assay.data.tpwide.file, row.names = F)
+
+
+```
+
+######### statistical tests
+
+```{r statisticalTest, echo = FALSE}
+
+assayData.d1d8.df = assayData.df[which(assayData.df$timepoint %in% c("DAY1", "DAY8")),]
+
+markers = unique(assayData.d1d8.df$marker)
+d1.median = NULL
+d8.median = NULL
+wilcox.p = NULL
+
+d1.paired.median = NULL
+d8.paired.median = NULL
+wilcox.paired.p = NULL
+
+mkr.tested = NULL
+trt.tested = NULL
+
+for(mkr in markers){
+  mkr.assayData.df = assayData.d1d8.df[assayData.d1d8.df$marker == mkr,]
+  trtmnt = unique(mkr.assayData.df$treatment_group)
+  for(trt in trtmnt){
+    mkr.trt.assay.df = mkr.assayData.df[mkr.assayData.df$treatment_group == trt,]
+    mkr.wilcox.res = wilcox.test(mkr.trt.assay.df[mkr.trt.assay.df$timepoint == "DAY1",]$analyte_value, mkr.trt.assay.df[mkr.trt.assay.df$timepoint == "DAY8",]$analyte_value)
+    #print (c(mkr, trt))
+    #print (mkr.wilcox.res)
+    
+    mkr.trt.assay.wd.df = spread(mkr.trt.assay.df, timepoint, analyte_value)
+    mkr.trt.assay.wd.df = na.omit(mkr.trt.assay.wd.df)
+    mkr.trt.wilcox.pair.res = wilcox.test(mkr.trt.assay.wd.df$DAY1, mkr.trt.assay.wd.df$DAY8, paired = TRUE)
+    print (mkr.trt.wilcox.pair.res)
+    
+    #mkr.trt.wilcox.pair.res2 = wilcox.test(log2(mkr.trt.assay.wd.df$DAY1), log2(mkr.trt.assay.wd.df$DAY8), paired = TRUE)  ## use log2 to transform data, test result didn't change.
+    #print (mkr.trt.wilcox.pair.res2)
+    d1.median = c(d1.median, median(mkr.trt.assay.df[mkr.trt.assay.df$timepoint == "DAY1",]$analyte_value))
+    d8.median = c(d8.median, median(mkr.trt.assay.df[mkr.trt.assay.df$timepoint == "DAY8",]$analyte_value))   
+    wilcox.p = c(wilcox.p, mkr.wilcox.res$p.value)
+    
+    d1.paired.median = c(d1.paired.median, median(mkr.trt.assay.wd.df$DAY1))
+    d8.paired.median = c(d8.paired.median, median(mkr.trt.assay.wd.df$DAY8))   
+    wilcox.paired.p = c(wilcox.paired.p, mkr.trt.wilcox.pair.res$p.value)
+    mkr.tested = c(mkr.tested, mkr)
+    trt.tested = c(trt.tested, trt)
+  }
+  
+d8_d1_comp.wilcox.df = data.frame("Analyte" = mkr.tested, "treatment_group" = trt.tested, "DAY1_med" = d1.median, "DAY8_med" = d8.median, "Wilcox_P" = formatC(wilcox.p, format = "e", digits = 3) , wilcox.BH.Padj,  wilcox.BF.Padj, "DAY1_pair_med" = d1.paired.median, "DAY8_pair_median" = d8.paired.median, "Wilcox_pair_P" = formatC(wilcox.paired.p, format = "e", digits = 3), wilcox.pair.BH.Padj, wilcox.pair.BF.Padj)
+}
+
+wilcox.BF.Padj = formatC(p.adjust(wilcox.p, n = length(wilcox.p), method = "bonferroni"), format = "e", digits = 3)
+wilcox.BH.Padj = formatC(p.adjust(wilcox.p, n = length(wilcox.p), method = "BH"), format = "e", digits = 3)
+
+wilcox.pair.BF.Padj = formatC(p.adjust(wilcox.paired.p, n = length(wilcox.paired.p), method = "bonferroni"), format = "e", digits = 3)
+wilcox.pair.BH.Padj = formatC(p.adjust(wilcox.paired.p, n = length(wilcox.paired.p), method = "BH"), format = "e", digits = 3)
+
+d8_d1_comp.wilcox.df = data.frame("Analyte" = mkr.tested, "treatment_group" = trt.tested, "DAY1_med" = d1.median, "DAY8_med" = d8.median, "Wilcox_P" = formatC(wilcox.p, format = "e", digits = 3) , wilcox.BH.Padj,  wilcox.BF.Padj, "DAY1_pair_med" = d1.paired.median, "DAY8_pair_median" = d8.paired.median, "Wilcox_pair_P" = formatC(wilcox.paired.p, format = "e", digits = 3), wilcox.pair.BH.Padj, wilcox.pair.BF.Padj)
+
+d8_d1_wilcox_test.file = paste("Amgen_D1_D8_wilcoxonTest", date, "csv", sep = ".")
+d8_d1_wilcox_test.file = paste(path4data, d8_d1_wilcox_test.file, sep = "/")
+write.csv(as.data.frame(d8_d1_comp.wilcox.df), file = d8_d1_wilcox_test.file, row.names = F)
+
+#d8_d1_comp.violinplot = ggviolin(assayData.d1d8.df, x = "treatment_group", y = "analyte_value", fill = "timepoint",  color = "timepoint", add = "boxplot", add.params = list(fill = "white"))  + scale_y_continuous(trans = "log10")
+
+#d8_d1_comp.violinplot = d8_d1_comp.violinplot  + facet_wrap(~marker, ncol = length(unique(assayData.df$marker)))
+d8_d1_comp.boxplot = ggboxplot(assayData.d1d8.df, x = "treatment_group", y = "analyte_value",  color = "timepoint", add = "jitter")  + scale_y_continuous(trans = "log10")
+
+d8_d1_comp.boxplot = d8_d1_comp.boxplot  + facet_wrap(~marker, ncol = length(unique(assayData.df$marker)))
+
+D8_D1_boxplot.file = paste("D8_D1_comp_boxplot", date, "png", sep = ".")
+
+D8_D1_boxplot.file = paste(path4data, D8_D1_boxplot.file, sep = "/")
+ggsave(d8_d1_comp.boxplot, file = D8_D1_boxplot.file, width = 10, height = 4, dpi = 300)
+
+
+```
+
+
+##### mixed effect model
+
+```{r mixed_model, echo = FALSE}
+formula = "analyte_change ~ treatment_group + timepoint + treatment_group:timepoint + (1|subject)"
+
+calculate_change = function(data.df){
+  d1.value = data.df[data.df$timepoint == "DAY1",]$analyte_value
+  
+  pcnt.change = NULL
+  for(i in 1:nrow(data.df)){
+    value.change = round((data.df[i,]$analyte_value/d1.value) * 100, digits = 2)
+    pcnt.change = c(pcnt.change, value.change)
+  }
+  
+  value.change.df = cbind(data.df, "analyte_change" = pcnt.change)
+  value.change.df$analyte_value = NULL
+  
+  return (value.change.df)
+}
+
+####### data set with complete timepoint data
+mkr.list = unique(assayData.df$marker)
+fixed.eff.car.p.df = data.frame()
+fixed.eff.lmerT.p.df = data.frame()
+
+tb.tc.p = NULL
+ta.d22.d8.p = NULL
+tb.d22.d8.p = NULL
+tc.d22.d8.p = NULL
+ta.d22.d8.ct = NULL
+tb.d22.d8.ct = NULL
+tc.d22.d8.ct = NULL
+
+#########generate marker change data with sample at all timepoints
+
+mkr.change.complete.df = data.frame()
+
+for(mkr in mkr.list){
+  mkr.data.df = assayData.df[assayData.df$marker == mkr,]
+  tp.num = length(unique(mkr.data.df$timepoint))
+  
+  for(subj in subjId){
+    subj.assay.df = mkr.data.df[mkr.data.df$subject == subj,]
+      if(nrow(subj.assay.df) == tp.num){
+        subj.change.df = calculate_change(subj.assay.df)
+        if(nrow(mkr.change.complete.df) == 0){
+          mkr.change.complete.df = subj.change.df
+        }else{
+          mkr.change.complete.df = rbind(mkr.change.complete.df, subj.change.df)
+        }
+    }
+  }
+}
+  
+#########generate marker change data with imputed data for missing data
+
+mkr.change.impute.df = data.frame()
+
+for(mkr in mkr.list){
+  mkr.data.df = assayData.df[assayData.df$marker == mkr,]
+  tp.total = unique(mkr.data.df$timepoint)
+  tp.num = length(tp.total)
+  
+  for(subj in subjId){
+    subj.assay.df = mkr.data.df[mkr.data.df$subject == subj,]
+      if(nrow(subj.assay.df) == tp.num){
+        subj.change.df = calculate_change(subj.assay.df)
+        if(nrow(mkr.change.impute.df) == 0){
+          mkr.change.impute.df = subj.change.df
+        }else{
+          mkr.change.impute.df = rbind(mkr.change.impute.df, subj.change.df)
+        }
+      }else{
+        subj.tp = subj.assay.df$timepoint
+        missing.tp = tp.total[-which(tp.total %in% subj.tp)]
+        trt.group = as.character(unique(subj.assay.df$treatment_group))
+        for(tp.m in missing.tp){
+          tp.existing.df = mkr.data.df[(mkr.data.df$timepoint == missing.tp & mkr.data.df$treatment_group == trt.group),]
+          tp.imputed = median(tp.existing.df$analyte_value)
+          missing.row.df = data.frame("subject" = subj, "timepoint" = tp.m, "analyte_value" = tp.imputed, "marker" = mkr, "treatment_group" = trt.group)
+          
+          subj.assay.df = rbind(subj.assay.df, missing.row.df)
+          
+        }
+        
+        subj.change.df = calculate_change(subj.assay.df)
+        if(nrow(mkr.change.impute.df) == 0){
+          mkr.change.impute.df = subj.change.df
+        }else{
+          mkr.change.impute.df = rbind(mkr.change.impute.df, subj.change.df)
+        }
+    }
+  }
+}
+  
+##############mixed model test
+
+run_mix_model = function(assay.change.df, mkr.list){
+  
+  trt.all.p = NULL
+  timepoint.p = NULL
+  tp_trt.p = NULL
+  tb.tc.p = NULL
+  ta.d22.d8.p = NULL
+  tb.d22.d8.p = NULL
+  tc.d22.d8.p = NULL
+  ta.d22.d8.ct = NULL
+  tb.d22.d8.ct = NULL
+  tc.d22.d8.ct = NULL
+  
+  for(mkr in mkr.list){
+    mkr.change.df = assay.change.df[assay.change.df$marker == mkr,]
+    mkr.change.df$timepoint = factor(mkr.change.df$timepoint, levels = c("DAY1", "DAY8", "DAY15", "DAY22", "DAY29"))
+    mkr.change.df$treatment_group = factor(mkr.change.df$treatment_group, levels = c("TA", "TB", "TC"))
+  
+    mixed.fit = lmer(formula, data = mkr.change.df)
+    fix.model.df = as.data.frame(Anova(mixed.fit))
+    
+    mkr.trt.p = fix.model.df[1, 3]
+    mkr.tp.p = fix.model.df[2, 3]
+    mkr.tp.trt.p = fix.model.df[3,3]
+    trt.all.p = c(trt.all.p, mkr.trt.p)
+    timepoint.p = c(timepoint.p,mkr.tp.p )
+    tp_trt.p = c(tp_trt.p, mkr.tp.trt.p)
+    
+    # fix.model.df = cbind("marker" = rep(mkr, nrow(fix.model.df)), fix.model.df)
+    # if(nrow(fixed.eff.car.p.df) == 0){
+    #   fixed.eff.car.p.df = fix.model.df
+    # }else{
+    #   fixed.eff.car.p.df = rbind(fixed.eff.car.p.df, fix.model.df)
+    # }
+  
+  ######## use anova() function in lmerTest package to show the omnibus test, compare with Anova() in car package
+    mixed.model.anova.df = as.data.frame(anova(mixed.fit, type = 2))
+    # mixed.model.anova.df = cbind("marker" = rep(mkr, nrow(mixed.model.anova.df)), mixed.model.anova.df)
+    # if(nrow(fixed.eff.lmerT.p.df) == 0){
+    #   fixed.eff.lmerT.p.df = mixed.model.anova.df
+    # }else{
+    # fixed.eff.lmerT.p.df = rbind(fixed.eff.lmerT.p.df, mixed.model.anova.df)
+    # }
+  
+  ####### retrieve the contrast b/w day22 and day8
+    mkr.model = summary(mixed.fit)$coefficients
+    
+    
+    TC_TB.matrix = matrix(c(0, -1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), 1)
+  
+    TC_TB_glht = glht(mixed.fit, TC_TB.matrix, alternative = "two.sided")
+    TC_TB_glht.res = summary(TC_TB_glht)
+    TC_TB.p = TC_TB_glht.res$test$pvalues
+  
+    TA_D22_D8_maxtrix = matrix(c(0, 0, 0, -1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0), 1)
+    TA_D22_D8_glht = glht(mixed.fit, TA_D22_D8_maxtrix, alternative = "two.sided")
+    TA_D22_D8_glht.res = summary(TA_D22_D8_glht)
+    TA_D22_D8.p = TA_D22_D8_glht.res$test$pvalues
+    TA_D22_D8.ct = TA_D22_D8_glht.res$test$coefficients
+  
+  
+    TB_D22_D8_maxtrix = matrix(c(0, 0, 0, -1, 0, 1, 0, -1, 0, 0, 0, 1, 0, 0, 0), 1)
+    TB_D22_D8_glht = glht(mixed.fit, TB_D22_D8_maxtrix, alternative = "two.sided")
+    TB_D22_D8_glht.res = summary(TB_D22_D8_glht)
+    TB_D22_D8.p = TB_D22_D8_glht.res$test$pvalues
+    TB_D22_D8.ct = TB_D22_D8_glht.res$test$coefficients
+  
+    TC_D22_D8_maxtrix = matrix(c(0, 0, 0, -1, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0), 1)
+    TC_D22_D8_glht = glht(mixed.fit, TC_D22_D8_maxtrix, alternative = "two.sided")
+    TC_D22_D8_glht.res = summary(TC_D22_D8_glht)
+    TC_D22_D8.p = TC_D22_D8_glht.res$test$pvalues
+    TC_D22_D8.ct = TC_D22_D8_glht.res$test$coefficients
+  
+    tb.tc.p = c(tb.tc.p, TB_TC.p)
+    ta.d22.d8.p = c(ta.d22.d8.p, TA_D22_D8.p)
+    tb.d22.d8.p = c(tb.d22.d8.p, TB_D22_D8.p)
+    tc.d22.d8.p = c(tc.d22.d8.p, TC_D22_D8.p)
+    ta.d22.d8.ct = c(ta.d22.d8.ct, TA_D22_D8.ct)
+    tb.d22.d8.ct = c(tb.d22.d8.ct, TB_D22_D8.ct)
+    tc.d22.d8.ct = c(tc.d22.d8.ct, TC_D22_D8.ct)
+  
+  
+  }
+  
+  D22_D8_contrast_p.df = data.frame("marker" = mkr.list, "Treat_P" = trt.all.p, "Timepoint_P" = timepoint.p, "Trt_TP_p" = tp_trt.p,  "TB_TC_P" = tb.tc.p, "TA_D22_D8_ctrst" = ta.d22.d8.ct, "TA_D22_D8_ctrst_P" = ta.d22.d8.p, "TB_D22_D8_ctrst" = tb.d22.d8.ct, "TB_D22_D8_ctrst_P" = tb.d22.d8.p, "TC_D22_D8_ctrst" = tc.d22.d8.ct, "TC_D22_D8_ctrst_P" = tc.d22.d8.p)
+  return(D22_D8_contrast_p.df)
+}
+
+complete.data.mixmodel.res = run_mix_model(mkr.change.complete.df, mkr.list)
+
+imputed.data.mixmodel.res = run_mix_model(mkr.change.impute.df, mkr.list)
+
+
+# mkr_D22_D8_contrast_p.df = data.frame("marker" = mkr.list, "TB_TC_P" = tb.tc.p, "TA_D22_D8_ctrst" = ta.d22.d8.ct, "TA_D22_D8_ctrst_P" = ta.d22.d8.p, "TB_D22_D8_ctrst" = tb.d22.d8.ct, "TB_D22_D8_ctrst_P" = tb.d22.d8.p, "TC_D22_D8_ctrst" = tc.d22.d8.ct, "TC_D22_D8_ctrst_P" = tc.d22.d8.p)
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
