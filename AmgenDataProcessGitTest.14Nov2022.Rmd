@@ -21,6 +21,7 @@ library(lme4)
 library(multcomp)
 library(car)
 library(lmerTest)
+## add GitTest line
 ```
 
 ########## create functions
