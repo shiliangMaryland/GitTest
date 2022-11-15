@@ -34,6 +34,8 @@ generate_date = function(){
   date = gsub("\\s+", "", date)
   
   return (date)
+  
+  ## add another line in date function
 }
 
 ```
